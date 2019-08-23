@@ -25,6 +25,8 @@ ENV LC_ALL en_US.UTF-8
 ENV LC_CTYPE en_US.UTF-8
 ENV LC_MESSAGES en_US.UTF-8
 
+COPY script/entrypoint.sh /entrypoint.sh
+
 RUN set -ex \
     && buildDeps=' \
         freetds-dev \
@@ -72,8 +74,12 @@ RUN set -ex \
 
 COPY script/entrypoint.sh /entrypoint.sh
 COPY config/airflow.cfg ${AIRFLOW_USER_HOME}/airflow.cfg
+COPY config/requirements.txt ${AIRFLOW_USER_HOME}/requirements.txt
 
 RUN chown -R airflow: ${AIRFLOW_USER_HOME}
+RUN pip install -r ${AIRFLOW_USER_HOME}/requirements.txt
+RUN python -m nltk.downloader stopwords
+RUN python -m spacy download en_core_web_sm
 
 EXPOSE 8080 5555 8793
 
