@@ -1,0 +1,5 @@
+* text=auto
+/config/* text eol=lf
+/dags/* text eol=lf
+/data/* text eol=lf
+/script/* text eol=lf
