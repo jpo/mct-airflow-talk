@@ -78,8 +78,6 @@ COPY config/requirements.txt ${AIRFLOW_USER_HOME}/requirements.txt
 
 RUN chown -R airflow: ${AIRFLOW_USER_HOME}
 RUN pip install -r ${AIRFLOW_USER_HOME}/requirements.txt
-RUN python -m nltk.downloader stopwords
-RUN python -m spacy download en_core_web_sm
 
 EXPOSE 8080 5555 8793
 
