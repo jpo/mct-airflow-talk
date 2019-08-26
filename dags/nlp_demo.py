@@ -82,8 +82,7 @@ def test_model(classifier, **context):
     """
 
     # Simulate a task failure
-    # if classifier.__name__ == 'LogisticRegression':
-    #     raise RuntimeError('BOOM!')
+    # raise RuntimeError('BOOM!')
 
     # Load model
     model_path = os.path.join(AIRFLOW_HOME, 'models', f'{classifier.__name__}.pkl')
