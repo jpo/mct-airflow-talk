@@ -15,6 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.metrics import f1_score, classification_report
+from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
@@ -32,25 +33,28 @@ def load_csv_to_sqlite(csv_path, sqlite_table, **context):
     """
     df = pd.read_csv(csv_path)
     with SqliteHook().get_conn() as conn:
-        df.to_sql(sqlite_table, con=conn, index=False, if_exists='replace')
+        df.to_sql(sqlite_table, con=conn, if_exists='replace')
 
 
-def train_test_split(**context):
+def split_data(**context):
     """
     Splits the sample data (i.e. research_papers) into training and test sets
     and stores them in the Sqlite DB.
     """
-    with SqliteHook().get_conn() as conn:
-        # Load full dataset
-        df = pd.read_sql('select * from research_papers', con=conn)
+    # Load full dataset
+    db = SqliteHook()
+    df = db.get_pandas_df('select * from research_papers')
 
-        # Create train/test split
-        train = df.sample(frac=0.67, random_state=42)
-        test = df.drop(train.index)
+    # Create train/test split
+    train, _ = train_test_split(df.index,
+                                test_size=0.33,
+                                stratify=df['Conference'],
+                                random_state=42)
 
-        # Save training and test data in separate tables
-        train.to_sql('training_data', con=conn, index=False, if_exists='replace')
-        test.to_sql('test_data', con=conn, index=False, if_exists='replace')
+    # Save training and test data in separate tables
+    with db.get_conn() as conn:
+        df.iloc[train].to_sql('training_data', con=conn, if_exists='replace')
+        df.drop(train).to_sql('test_data', con=conn, if_exists='replace')
 
 
 def train_model(classifier, **context):
@@ -58,8 +62,7 @@ def train_model(classifier, **context):
     Trains a model using the given classifier and stores it at MODEL_PATH.
     """
     # Load data
-    with SqliteHook().get_conn() as conn:
-        df = pd.read_sql('select * from training_data', con=conn)
+    df = SqliteHook().get_pandas_df('select * from training_data')
 
     # Create pipeline
     pipeline = Pipeline([
@@ -71,8 +74,7 @@ def train_model(classifier, **context):
     pipeline.fit(df['Title'].tolist(), df['Conference'].tolist())
 
     # Save model
-    model_path = os.path.join(AIRFLOW_HOME, 'models', f'{classifier.__name__}.pkl')
-    pickle.dump(pipeline, open(model_path, 'wb'))
+    _save_model(pipeline, classifier.__name__)
 
 
 def test_model(classifier, **context):
@@ -85,16 +87,14 @@ def test_model(classifier, **context):
     # raise RuntimeError('BOOM!')
 
     # Load model
-    model_path = os.path.join(AIRFLOW_HOME, 'models', f'{classifier.__name__}.pkl')
-    pipeline = pickle.load(open(model_path, 'rb'))
+    model = _load_model(classifier.__name__)
 
     # Load data
-    with SqliteHook().get_conn() as conn:
-        df = pd.read_sql('select * from test_data', con=conn)
+    df = SqliteHook().get_pandas_df('select * from test_data')
 
     # Make predictions
     X, y = df['Title'].tolist(), df['Conference'].tolist()
-    y_pred = pipeline.predict(X)
+    y_pred = model.predict(X)
 
     # Log classification results
     print(classification_report(y, y_pred))
@@ -109,19 +109,18 @@ def predict(classifier, **context):
     stores the results in the mct_talks table.
     """
     # Load model
-    model_path = os.path.join(AIRFLOW_HOME, 'models', f'{classifier.__name__}.pkl')
-    pipeline = pickle.load(open(model_path, 'rb'))
+    model = _load_model(classifier.__name__)
 
-    with SqliteHook().get_conn() as conn:
-        # Load data
-        df = pd.read_sql('select * from mct_talks', con=conn)
+    # Load data
+    db = SqliteHook()
+    df = db.get_pandas_df('select * from mct_talks')
 
-        # Make predictions
-        X = df['Title'].tolist()
-        df['Conference'] = pipeline.predict(X)
+    # Make predictions
+    df['Conference'] = model.predict(df['Title'].tolist())
 
-        # Save predictions
-        df.to_sql('mct_talks', con=conn, index=False, if_exists='replace')
+    # Save predictions
+    with db.get_conn() as conn:
+        df.to_sql('mct_talks', con=conn, if_exists='replace')
 
 
 def select_best_model(**context):
@@ -133,13 +132,23 @@ def select_best_model(**context):
     task_ids = [f'test_{clf.__name__}' for clf in CLASSIFIERS]
 
     # Pull XCom from test tasks
-    values = context['ti'].xcom_pull(key='return_value', task_ids=task_ids)
+    scores = context['ti'].xcom_pull(key='return_value', task_ids=task_ids)
 
     # Find the classifier with the best accuracy
-    classifier, _ = values[np.argmax(values, axis=0)[1]]
+    classifier, _ = scores[np.argmax(scores, axis=0)[1]]
 
     # Return the task for the best classifier
     return f'predict_{classifier}'
+
+
+def _load_model(model_name):
+    model_path = os.path.join(AIRFLOW_HOME, 'models', f'{model_name}.pkl')
+    return pickle.load(open(model_path, 'rb'))
+
+
+def _save_model(model, model_name):
+    model_path = os.path.join(AIRFLOW_HOME, 'models', f'{model_name}.pkl')
+    pickle.dump(model, open(model_path, 'wb'))
 
 
 # DAG Setup
@@ -179,7 +188,7 @@ with dag:
 
     train_test_split_task = PythonOperator(
         task_id='train_test_split',
-        python_callable=train_test_split)
+        python_callable=split_data)
 
     model_prep_task = BashOperator(
         task_id='model_prep',
